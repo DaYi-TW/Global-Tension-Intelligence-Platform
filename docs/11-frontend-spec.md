@@ -104,6 +104,8 @@ Layer 順序（由底到頂）：
 | 80–100 | `#6a0a0a`（深紅） | 危機 |
 | 無資料 | `#1a1a2a`（暗灰藍） | N/A |
 
+> **注意**：評分引擎使用 `tanh` 壓縮正規化（見 `03-scoring-engine §3.4`），高分區間（80–100）在現實中較難達到。色階中段（40–60）在一般局勢下為最常用範圍，設計時可加強此段的色彩對比度以提升可讀性。
+
 Mapbox expression 實作：
 ```json
 [
@@ -396,11 +398,15 @@ interface GlobalStore {
   // 地圖狀態
   mapDimension: 'overall' | 'military' | 'political' | 'economic' | 'social' | 'cyber'
   selectedCountry: string | null   // ISO alpha-3
+  selectedRegion: string | null    // 區域代碼（如 'middle_east'），區域頁面或區域摘要面板用
   mapData: Record<string, CountryHeatData>  // 快取當前日期地圖資料
+  isMapLoading: boolean            // 地圖資料載入中（切換日期時顯示 loading 遮罩）
+  preloadedRange: { from: string; to: string } | null  // 已預載至記憶體的日期範圍
 
   // UI 狀態
   sidePanelOpen: boolean
   sidePanelCountry: string | null
+  error: string | null             // 全局錯誤訊息（API 失敗、網路斷線等），顯示 toast 通知
 
   // Actions
   setDate: (date: string) => void
@@ -408,6 +414,10 @@ interface GlobalStore {
   pause: () => void
   setDimension: (dim: string) => void
   selectCountry: (code: string | null) => void
+  selectRegion: (code: string | null) => void
+  setMapLoading: (loading: boolean) => void
+  setPreloadedRange: (range: { from: string; to: string } | null) => void
+  setError: (msg: string | null) => void
 }
 ```
 
@@ -430,12 +440,10 @@ Query Params:
 Response:
 {
   "dimension": "overall",
-  "data": {
+  "dates": {
     "2026-03-01": {
-      "countries": [
-        { "country_code": "IRN", "score": 82.1 },
-        ...
-      ]
+      "IRN": { "score": 82.1, "band": "Crisis", "band_zh": "危機" },
+      "USA": { "score": 35.2, "band": "Watch",  "band_zh": "關注" }
     },
     "2026-03-02": { ... },
     ...
@@ -443,9 +451,11 @@ Response:
 }
 ```
 
-### `GET /api/events/timeline`
+### `GET /api/events-timeline`
 
 取得日期範圍內的重大事件（用於時間軸刻度標記）。
+
+> 注意：使用 `/api/events-timeline`（含 hyphen），避免與 `/api/events/{event_id}` 路由衝突（見 `05-api-spec §5.9`）。
 
 ```
 Query Params:
@@ -514,4 +524,4 @@ Response:
 
 ---
 
-*文件版本：v1.0 | 2026-04-07*
+*文件版本：v1.1 | 2026-04-07（修正 I-15,M-11,route-fix）*

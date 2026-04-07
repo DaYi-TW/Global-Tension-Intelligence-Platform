@@ -5,7 +5,9 @@
 - **AI 只做語意輔助**，不影響任何數字分數計算
 - **評分引擎是真相來源**，AI 輸出是補充標籤
 - AI 分析失敗不阻斷流程，使用 fallback 預設值
-- 記錄 `model_version` 與 `prompt_version`，支援效果追蹤與版本回滾
+- 記錄 `model_version` 與 `prompt_version`，支援效果追蹤與版本回滾（與 `04-database-schema §4.9` `event_ai_analysis` 表的對應欄位同步）
+
+> **⚠️ 關鍵隔離原則**：AI Analysis Service 的所有輸出**僅寫入 `event_ai_analysis` 表**，絕不寫入 `event_dimensions` 表。`event_dimensions` 中的 `source` 欄位只允許 `'rule'`（由 Normalization Service 負責填寫）。評分引擎只讀 `event_dimensions`（source='rule'），永遠不讀 `event_ai_analysis`。AI 分析的 `dimensions` 欄位是**純前端展示用途**，不參與任何評分計算。
 
 ---
 
@@ -142,8 +144,23 @@ def get_fallback_analysis(event: Event) -> AIAnalysisResult:
 ```python
 BATCH_SIZE = 20         # 每批最多 20 筆
 RATE_LIMIT_DELAY = 1.0  # 批次間等待秒數
+BACKLOG_WARN_THRESHOLD = 1000  # 積壓超過此數量發出 WARNING
 
-async def batch_analyze_events(event_ids: List[int]):
+async def batch_analyze_events():
+    # 每次最多處理 200 筆（優先最新事件）
+    event_ids = await db.query(
+        "SELECT id FROM events WHERE ai_analyzed = FALSE "
+        "ORDER BY event_time DESC LIMIT 200"
+    )
+
+    # 積壓告警：若未分析事件數量過多，提示 pipeline 健康問題
+    backlog_count = await db.count("SELECT COUNT(*) FROM events WHERE ai_analyzed = FALSE")
+    if backlog_count > BACKLOG_WARN_THRESHOLD:
+        logger.warning(
+            f"AI analysis backlog is high: {backlog_count} events pending. "
+            "Consider scaling up worker or checking LLM API availability."
+        )
+
     events = await db.get_events_by_ids(event_ids)
     batches = [events[i:i+BATCH_SIZE] for i in range(0, len(events), BATCH_SIZE)]
 
@@ -156,6 +173,7 @@ async def batch_analyze_events(event_ids: List[int]):
                 logger.error(f"Failed to analyze {event.event_id}: {result}")
                 await db.save_ai_analysis(event.id, get_fallback_analysis(event))
             else:
+                # 只寫入 event_ai_analysis，不寫入 event_dimensions
                 await db.save_ai_analysis(event.id, result)
                 await db.mark_ai_analyzed(event.id)
 
@@ -189,6 +207,17 @@ class AIAnalysisOutput(BaseModel):
 
 ---
 
+### 每日摘要 null 處理
+
+若 AI 每日摘要生成失敗（LLM 錯誤、超時、格式異常），`global_tension_daily.ai_summary` 寫入 `NULL`。
+
+前端對 `ai_summary = null` 的處理：
+- `/dashboard` 頁：顯示「今日摘要暫時無法生成，請稍後再試。」灰色提示文字
+- `/api/dashboard/overview` 回應中 `ai_daily_summary` 欄位為 `null` 時，前端不顯示摘要卡片
+- 不影響其他資料的正常顯示
+
+---
+
 ## 8.8 版本管理
 
 | 版本 | 變更內容 | 日期 |
@@ -200,4 +229,4 @@ class AIAnalysisOutput(BaseModel):
 
 ---
 
-*文件版本：v1.0 | 2026-04-07*
+*文件版本：v1.1 | 2026-04-07（修正 C-4,I-3,I-7,I-10,M-3）*

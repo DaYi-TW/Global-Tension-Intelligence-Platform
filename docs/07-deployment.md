@@ -94,7 +94,7 @@ services:
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/1
       GDELT_ENABLED: "true"
-      ACLED_API_KEY: ${ACLED_API_KEY}
+      ACLED_ACCESS_KEY: ${ACLED_ACCESS_KEY}
       ACLED_EMAIL: ${ACLED_EMAIL}
       NEWSAPI_KEY: ${NEWSAPI_KEY}
       LLM_API_KEY: ${LLM_API_KEY}
@@ -186,12 +186,19 @@ http {
             proxy_read_timeout 30s;
         }
 
-        # Admin API（限內網）
+        # Admin API（Bearer token 驗證 + 限內網 IP）
+        # Authorization: Bearer <ADMIN_API_KEY>
         location /admin/ {
+            # IP 白名單（僅允許內網）
             allow 10.0.0.0/8;
             allow 172.16.0.0/12;
             deny all;
+
+            # Bearer token 驗證（由 FastAPI middleware 處理，Nginx 僅做 IP 層過濾）
+            # 若未提供有效 token，FastAPI 回傳 401 Unauthorized
             proxy_pass http://api_backend;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
         }
 
         # 前端靜態檔案
@@ -251,7 +258,7 @@ CELERY_BROKER_URL=redis://redis:6379/1
 
 # 資料來源
 GDELT_ENABLED=true
-ACLED_API_KEY=your_acled_key
+ACLED_ACCESS_KEY=your_acled_access_key
 ACLED_EMAIL=your@email.com
 NEWSAPI_KEY=your_newsapi_key
 
@@ -268,6 +275,9 @@ SCORING_SCALE_FACTOR=20.0
 APP_ENV=development    # development | production
 LOG_LEVEL=INFO
 CORS_ORIGINS=http://localhost:3000
+
+# Admin API 安全
+ADMIN_API_KEY=your_secure_admin_token   # Bearer token，Admin API 需在 Authorization header 中帶入
 ```
 
 ---
@@ -310,4 +320,4 @@ alembic downgrade -1
 
 ---
 
-*文件版本：v1.0 | 2026-04-07*
+*文件版本：v1.1 | 2026-04-07（修正 M-7,I-16）*

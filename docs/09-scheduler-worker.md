@@ -20,7 +20,7 @@
 | `ingest_news` | `pipeline.tasks.ingest_news` | 每小時（:10） | 補全新聞原文 |
 | `normalize_pending` | `pipeline.tasks.normalize_pending` | 每 20 分鐘 | 正規化待處理事件 |
 | `ai_enrich_pending` | `pipeline.tasks.ai_enrich_pending` | 每 30 分鐘 | AI 批次分析 |
-| `score_and_aggregate` | `pipeline.tasks.score_and_aggregate` | 每小時（:45） | 重算並聚合各層分數 |
+| `score_and_aggregate` | `pipeline.tasks.score_and_aggregate` | 每小時（:55） | 重算並聚合各層分數 |
 | `refresh_cache` | `pipeline.tasks.refresh_cache` | score_and_aggregate 完成後觸發 | 更新 Redis 快取 |
 | `daily_summary_gen` | `pipeline.tasks.daily_summary_gen` | 每日 06:00 UTC | 生成 AI 每日摘要 |
 | `full_recalculate` | `pipeline.tasks.full_recalculate` | 每週日 02:00 UTC | 全量重算（防止累積誤差） |
@@ -57,7 +57,7 @@ CELERYBEAT_SCHEDULE = {
     },
     "score-and-aggregate": {
         "task": "pipeline.tasks.score_and_aggregate",
-        "schedule": crontab(minute=45), # 每小時 :45
+        "schedule": crontab(minute=55), # 每小時 :55（確保 AI 分析有足夠時間完成）
     },
     "daily-summary": {
         "task": "pipeline.tasks.daily_summary_gen",
@@ -78,30 +78,27 @@ CELERYBEAT_SCHEDULE = {
 
 ## 9.4 任務依賴關係
 
+> **重要說明**：各任務均由 Celery Beat 以**獨立 cron 排程**觸發，彼此之間無強制 chain 依賴。
+> 下圖為**邏輯資料流順序**，不代表任務間有 Celery chain 執行。
+> 唯一的例外是 `refresh_cache`，它在 `score_and_aggregate` 完成後以 `.delay()` 觸發。
+
 ```
 ingest_gdelt ──┐
-ingest_acled ──┼──→ normalize_pending
+ingest_acled ──┼──→ normalize_pending（每 20 分鐘，讀 raw_events）
 ingest_news  ──┘         │
-                         ↓
-                  ai_enrich_pending
+                         ↓（邏輯順序，非強制 chain）
+                  ai_enrich_pending（每 30 分鐘）
                          │
-                         ↓
-                  score_and_aggregate
+                         ↓（邏輯順序，非強制 chain）
+                  score_and_aggregate（每小時 :55）
+                  ⚠️ 排在 :55 是為了讓 ai_enrich_pending 有足夠時間完成（最少 25 分鐘窗口）
+                  事件若尚未 AI 分析，評分引擎使用 event_dimensions（source='rule'）
                          │
-                         ↓
+                         ↓（唯一的 .delay() 觸發）
                    refresh_cache
                          │
-                (每日觸發)↓
+                (每日 06:00 UTC)↓
                   daily_summary_gen
-```
-
-`score_and_aggregate` 完成後以 Celery chain 自動觸發 `refresh_cache`：
-
-```python
-@app.task
-def score_and_aggregate():
-    # ... 執行評分聚合
-    refresh_cache.delay()   # 自動觸發下游任務
 ```
 
 ---
@@ -155,11 +152,15 @@ def ingest_gdelt(self):
 ### `ai_enrich_pending`
 
 ```
-輸入：SELECT * FROM events WHERE ai_analyzed = FALSE ORDER BY event_time DESC LIMIT 100
-輸出：寫入 event_ai_analysis / event_dimensions
+輸入：SELECT * FROM events WHERE ai_analyzed = FALSE ORDER BY event_time DESC LIMIT 200
+      （優先處理最新事件；每次最多 200 筆避免無限佔用 Worker）
+輸出：寫入 event_ai_analysis（摘要、展示用維度）
+      注意：不寫入 event_dimensions（該表由 Normalization Service 負責）
 超時：600 秒（LLM 呼叫較慢）
 重試：2 次（LLM 呼叫昂貴，減少重試）
-批次大小：20 筆
+批次大小：20 筆，批次間等待 1 秒
+積壓告警：若 SELECT COUNT(*) FROM events WHERE ai_analyzed = FALSE > 1000，
+          發出 WARNING log（提示 pipeline 健康問題）
 ```
 
 ### `score_and_aggregate`
@@ -175,22 +176,33 @@ def ingest_gdelt(self):
 ### `full_recalculate`
 
 ```
-輸入：所有歷史事件（無時間限制）
-輸出：重建所有 *_tension_daily 快照
+輸入：RECALCULATE_LOOKBACK_DAYS 環境變數指定的回溯天數（預設 90 天）
+      若 DB 中最新 scoring_version 與環境變數相同，跳過執行（冪等保護）
+輸出：重建該日期範圍的 event_scores、country_tension_daily、
+      region_tension_daily、global_tension_daily（指定 scoring_version）
+      舊版本資料不刪除，新舊版本並存
 超時：3600 秒（最多 1 小時）
-重試：不自動重試（人工介入）
-說明：完整重算，scoring_version 可指定
+重試：不自動重試（需人工介入確認）
+完成後：觸發 refresh_cache
+說明：週日 02:00 UTC 執行，此時流量最低；若超過 60 分鐘仍未完成，
+      發出 CRITICAL 告警
 ```
 
----
+### `cleanup_old_cache`
 
-## 9.7 冪等性保證
+```
+執行內容：
+  1. 刪除 Redis 中日期 > 90 天前的歷史 key（SCAN 模式匹配 map:heat:{old_date}:*）
+  2. 清理 PostgreSQL：刪除 raw_events 中 fetched_at > 180 天且 normalized=TRUE 的資料
+  3. 清理 PostgreSQL：刪除 ingest_errors 中 occurred_at > 30 天且 resolved=TRUE 的資料
+注意：不清理 event_scores 和 *_tension_daily（這些是分析資料，長期保留）
+```
 
 所有 pipeline 任務設計為**可重複執行**，相同輸入不產生重複資料：
 
 - `raw_events`：`UNIQUE(source_type, source_event_id)` + `ON CONFLICT DO NOTHING`
 - `events`：`UNIQUE(event_id)` + `ON CONFLICT DO NOTHING`
-- `*_tension_daily`：`UNIQUE(country/region_code, date)` + `ON CONFLICT DO UPDATE`
+- `*_tension_daily`：`UNIQUE(country/region_code, date, scoring_version)` + `ON CONFLICT DO UPDATE`
 - `event_scores`：`UNIQUE(event_id, scoring_version)` + `ON CONFLICT DO UPDATE`
 
 ---
@@ -203,4 +215,4 @@ def ingest_gdelt(self):
 
 ---
 
-*文件版本：v1.0 | 2026-04-07*
+*文件版本：v1.1 | 2026-04-07（修正 C-7,I-4,I-7,I-8,I-14,M-5）*

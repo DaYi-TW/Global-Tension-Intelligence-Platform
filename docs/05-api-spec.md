@@ -4,10 +4,13 @@
 
 - Base URL：`/api`
 - 資料格式：JSON（`Content-Type: application/json`）
-- 時間格式：ISO 8601 UTC（`2026-04-07T08:00:00Z`）
+- 時間格式：ISO 8601 UTC（`2026-04-07T08:00:00Z`），欄位名稱統一為 `event_time`
 - 分頁：`page`（1-based）+ `limit`（預設 20，最大 100）
 - 錯誤格式：`{ "error": "message", "code": "ERROR_CODE" }`
 - 快取：所有 GET 皆有對應 Redis key，Cache-Control 由 Nginx 設定
+- **國家代碼**：ISO 3166-1 alpha-3（如 `IRN`, `USA`）
+- **區域代碼**：`02-data-pipeline.md §2.4` 定義的 9 個標準代碼（如 `middle_east`）
+- **final_score**：0–100 正規化值（`normalize_to_100(raw_score)`），不是原始連乘結果
 
 ---
 
@@ -29,6 +32,7 @@
     "delta_7d": 12.1
   },
   "trend_7d": [
+    // sparkline 陣列：固定 7 筆，按日期升序，用於首頁趨勢迷你圖
     { "date": "2026-04-01", "score": 56.3 },
     { "date": "2026-04-02", "score": 58.1 },
     { "date": "2026-04-03", "score": 61.4 },
@@ -72,9 +76,12 @@
     { "country_code": "RUS", "name_zh": "俄羅斯", "score": 78.9, "rank": 3, "delta_1d": -0.8 }
   ],
   "fastest_rising_countries": [
+    // Top 5：過去 24 小時漲幅最大（today - yesterday），同分以 today score DESC 排序
     { "country_code": "IRN", "name_zh": "伊朗", "delta_1d": 5.2 }
   ],
-  "ai_daily_summary": "今日世界緊張度 68.5，較昨日上升 7.2 點。主要推升因素為伊以軍事衝突升溫及紅海航運風險提高。緩和因素為蘇丹停火談判進展。",
+  "ai_daily_summary": "今日世界緊張度 68.5，較昨日上升 7.2 點。...",
+  // ⚠️ ai_daily_summary 可能為 null（每日 06:00 UTC 前尚未生成）
+  // 前端遇到 null 時應顯示「今日摘要生成中，請稍後再試」
   "generated_at": "2026-04-07T06:05:00Z"
 }
 ```
@@ -270,7 +277,8 @@
     "actor_importance": 1.5,
     "source_confidence": 0.91,
     "time_decay": 1.0,
-    "final_score": 18.5
+    "raw_score": 3.12,       // 連乘原始值（未正規化）
+    "final_score": 18.5      // normalize_to_100(raw_score)，0–100 正規化值
   },
   "ai_explanation": "此事件涉及中東敏感區域的直接軍事攻擊，伊朗與以色列均為區域關鍵行為者，軍事維度影響最為顯著。",
   "news_sources": [
@@ -392,6 +400,9 @@
 
 ### `GET /api/map/heat`
 
+> 用途：即時單日地圖染色（含熱點標記），適合「今日視角」。
+> 與 `/api/map/heat/range` 的差異：此 endpoint 含 `hotspots` 且有更短的快取 TTL（15 分鐘）。
+
 **Query Parameters：**
 
 | 參數 | 類型 | 說明 |
@@ -441,52 +452,61 @@
 
 ### `GET /api/map/heat/range`
 
-批次取得日期範圍的地圖染色資料，供前端時間軸播放預載使用。
+> 用途：批次取得日期範圍的地圖染色資料，供前端時間軸播放預載使用。
+> 與 `/api/map/heat` 的差異：不含 `hotspots`（靜態資料，從 `/api/map/heat` 取得一次即可）；快取 TTL 1 小時（歷史資料，較少變動）。
 
 **Query Parameters：**
 
 | 參數 | 類型 | 說明 |
 |---|---|---|
-| `from` | string | 開始日期 `YYYY-MM-DD` |
-| `to` | string | 結束日期 `YYYY-MM-DD`（最多跨距 90 天） |
-| `dimension` | string | `overall`（預設）\| `military` \| `political` \| `economic` \| `social` \| `cyber` |
+| `from` | string | ✅ 必填 | 開始日期 `YYYY-MM-DD` |
+| `to` | string | ✅ 必填 | 結束日期 `YYYY-MM-DD`（最多跨距 90 天） |
+| `dimension` | string | ✅ 必填 | `overall` \| `military` \| `political` \| `economic` \| `social` \| `cyber` |
 
 **Response 200：**
 
 ```json
 {
   "dimension": "overall",
-  "data": {
+  "from": "2026-04-06",
+  "to": "2026-04-07",
+  "dates": {
     "2026-04-06": {
-      "countries": [
-        { "country_code": "IRN", "score": 82.1, "band": "Crisis" },
-        { "country_code": "ISR", "score": 74.5, "band": "High" }
-      ]
+      "IRN": { "score": 82.1, "band": "Crisis", "band_zh": "危機" },
+      "ISR": { "score": 74.5, "band": "High",   "band_zh": "高壓" }
     },
     "2026-04-07": {
-      "countries": [
-        { "country_code": "IRN", "score": 87.3, "band": "Crisis" }
-      ]
+      "IRN": { "score": 87.3, "band": "Crisis", "band_zh": "危機" }
     }
   }
 }
 ```
 
+> 說明：`dates` 物件 key 為日期字串，value 為當日有資料的國家 map（key = ISO alpha-3）。
+> 無資料的國家不出現（分數視為 0）。前端可直接以 `dates[date][countryCode]?.score ?? 0` 取值。
+
 ---
 
 ## 5.12 Events Timeline API（時間軸刻度標記）
 
-### `GET /api/events/timeline`
+### `GET /api/events-timeline`
+
+> ⚠️ 路由為 `/api/events-timeline`（連字號），不是 `/api/events/timeline`。
+> 使用 `/events/timeline` 會與 `/events/{event_id}` 路由衝突（FastAPI 會將 "timeline" 解析為 event_id）。
 
 取得日期範圍內超過閾值的重大事件，用於時間軸上的刻度標記。
 
 **Query Parameters：**
 
-| 參數 | 類型 | 說明 |
-|---|---|---|
-| `from` | string | 開始日期 |
-| `to` | string | 結束日期 |
-| `min_score` | number | 最低事件分數門檻（預設 10） |
+| 參數 | 類型 | 必填 | 預設 | 說明 |
+|---|---|---|---|---|
+| `from` | string | ✅ | — | 開始日期 `YYYY-MM-DD` |
+| `to` | string | ✅ | — | 結束日期 `YYYY-MM-DD` |
+| `min_score` | number | ❌ | 10 | 最低 final_score 門檻 |
+| `limit` | integer | ❌ | 50 | 最大回傳筆數（上限 200） |
+| `risk_or_relief` | string | ❌ | — | `risk` \| `relief`（不填則兩者都回傳） |
+| `country` | string | ❌ | — | 篩選特定 ISO alpha-3 國家 |
+| `region` | string | ❌ | — | 篩選特定區域代碼 |
 
 **Response 200：**
 
@@ -511,6 +531,11 @@
 
 ## 5.13 Admin API（內部使用）
 
+> ⚠️ `/admin/*` 端點限制：
+> - 僅允許內網 IP 訪問（Nginx 層 IP 白名單）
+> - 需提供 `Authorization: Bearer {ADMIN_API_KEY}` Header
+> - 未授權的請求回傳 `401 Unauthorized`
+
 ### `POST /admin/recalculate`
 
 觸發全量或部分重算。
@@ -533,12 +558,13 @@ Response:
 
 ---
 
-## 5.12 HTTP 狀態碼規範
+## 5.14 HTTP 狀態碼規範
 
 | 狀態碼 | 情境 |
 |---|---|
 | 200 | 成功 |
 | 400 | 請求參數錯誤 |
+| 401 | Admin API 認證失敗（缺少或無效的 Bearer token） |
 | 404 | 找不到資源（event_id / country_code 不存在） |
 | 422 | 參數格式驗證失敗（Pydantic） |
 | 500 | 伺服器內部錯誤 |
@@ -546,4 +572,4 @@ Response:
 
 ---
 
-*文件版本：v1.0 | 2026-04-07*
+*文件版本：v1.1 | 2026-04-07（修正 C-5,C-6,I-5,I-9,I-10,I-16,M-2,M-8,M-9）*
