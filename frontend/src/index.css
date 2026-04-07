@@ -1,0 +1,79 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * { box-sizing: border-box; }
+  html, body, #root { height: 100%; margin: 0; padding: 0; overflow: hidden; }
+  body {
+    font-family: 'Exo 2', sans-serif;
+    background: #0d0f14;
+    color: #e8eaf0;
+  }
+}
+
+/* Timeline slider */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+  cursor: pointer;
+  width: 100%;
+}
+input[type="range"]::-webkit-slider-runnable-track {
+  background: #2a2d3a;
+  height: 4px;
+  border-radius: 2px;
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #4299e1;
+  margin-top: -5px;
+  box-shadow: 0 0 8px rgba(66,153,225,0.6);
+}
+input[type="range"]::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #4299e1;
+  border: none;
+  box-shadow: 0 0 8px rgba(66,153,225,0.6);
+}
+
+/* MapLibre popup */
+.maplibregl-popup-content {
+  background: #151820 !important;
+  border: 1px solid #2a2d3a !important;
+  border-radius: 6px !important;
+  padding: 10px 14px !important;
+  color: #e8eaf0 !important;
+  font-family: 'Exo 2', sans-serif !important;
+  font-size: 13px !important;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.6) !important;
+  min-width: 160px;
+}
+.maplibregl-popup-tip { display: none !important; }
+.maplibregl-ctrl-attrib-inner { display: none !important; }
+.maplibregl-ctrl-logo { display: none !important; }
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: #151820; }
+::-webkit-scrollbar-thumb { background: #2a2d3a; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #3a3d4a; }
+
+/* ECharts container */
+.echarts-for-react { width: 100%; }
+
+/* Pulse animation for event markers */
+@keyframes pulse-ring {
+  0%   { transform: scale(0.6); opacity: 1; }
+  100% { transform: scale(2.0); opacity: 0; }
+}
+.pulse-ring {
+  animation: pulse-ring 1.8s ease-out infinite;
+}
