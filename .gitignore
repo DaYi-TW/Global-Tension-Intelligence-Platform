@@ -1,0 +1,31 @@
+# Claude Code
+.claude/
+.agents/
+skills-lock.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+dist/
+build/
+*.egg
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Node
+node_modules/
+.next/
+dist/
+
+# Docker
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
