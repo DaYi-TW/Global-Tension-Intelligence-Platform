@@ -307,7 +307,7 @@ export default function CountryPanel() {
       })
       .catch(console.error)
       .finally(() => setLoading(false))
-  }, [sidePanelCountry, currentDate])
+  }, [sidePanelCountry, sidePanelOpen, currentDate])
 
   const score     = mapData[sidePanelCountry]?.score
   const band      = mapData[sidePanelCountry]?.band
