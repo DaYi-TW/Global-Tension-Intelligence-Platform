@@ -33,4 +33,10 @@ export const fetchMapHeatRange = (from, to, dimension = 'overall') =>
     params: { from, to, dimension },
   }).then(r => r.data)
 
+export const fetchEvents = (params = {}) =>
+  api.get('/events', { params }).then(r => r.data)
+
+export const fetchEventDetail = (eventId) =>
+  api.get(`/events/${eventId}`).then(r => r.data)
+
 export default api

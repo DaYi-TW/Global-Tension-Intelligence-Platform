@@ -365,6 +365,224 @@ class QueryService:
 
         return {"dimension": dimension, "dates": dates_dict}
 
+    async def get_events(
+        self,
+        country: str | None = None,
+        region: str | None = None,
+        event_type: str | None = None,
+        risk_or_relief: str | None = None,
+        date: str | None = None,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> dict:
+        """事件列表，含評分分解與新聞來源"""
+        # 組建動態 WHERE 條件
+        conditions = []
+        params: dict = {"limit": limit, "offset": offset}
+
+        if country:
+            conditions.append("ec.country_code = :country")
+            params["country"] = country
+        if region:
+            conditions.append("e.region_code = :region")
+            params["region"] = region
+        if event_type:
+            conditions.append("e.event_type = :event_type")
+            params["event_type"] = event_type
+        if risk_or_relief:
+            conditions.append("e.risk_or_relief = :risk_or_relief")
+            params["risk_or_relief"] = risk_or_relief
+        if date:
+            conditions.append("DATE(e.event_time) = :date")
+            from datetime import date as date_type
+            params["date"] = date_type.fromisoformat(date)
+
+        where_clause = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+
+        # 主查詢：events + event_scores + event_countries（聚合）
+        events_sql = text(f"""
+            SELECT
+                e.id,
+                e.event_id,
+                e.title,
+                e.event_type,
+                e.risk_or_relief,
+                e.severity,
+                e.event_time,
+                e.region_code,
+                e.source_count,
+                e.source_confidence,
+                es.final_score,
+                es.raw_score,
+                es.base_severity,
+                es.scope_weight,
+                es.geo_sensitivity,
+                es.actor_importance,
+                es.time_decay,
+                ed.military_score,
+                ed.political_score,
+                ed.economic_score,
+                ed.social_score,
+                ed.cyber_score,
+                (
+                    SELECT ARRAY_AGG(ec2.country_code ORDER BY ec2.country_code)
+                    FROM event_countries ec2
+                    WHERE ec2.event_id = e.id
+                ) AS country_codes
+            FROM events e
+            {"JOIN event_countries ec ON e.id = ec.event_id" if country else ""}
+            LEFT JOIN event_scores es ON e.id = es.event_id AND es.scoring_version = :sv
+            LEFT JOIN event_dimensions ed ON e.id = ed.event_id
+            {where_clause}
+            {"" if country else ""}
+            ORDER BY COALESCE(es.final_score, 0) DESC, e.event_time DESC
+            LIMIT :limit OFFSET :offset
+        """)
+        params["sv"] = self.sv
+
+        rows = await self.session.execute(events_sql, params)
+        events_raw = rows.fetchall()
+
+        if not events_raw:
+            return {"total": 0, "events": []}
+
+        # 取各 event 的 news sources（批次）
+        event_ids = [r.id for r in events_raw]
+        news_rows = await self.session.execute(text("""
+            SELECT event_id, source_name, source_url, title, published_at, credibility_score
+            FROM news_sources
+            WHERE event_id = ANY(:ids)
+            ORDER BY event_id, credibility_score DESC NULLS LAST
+        """), {"ids": event_ids})
+        news_by_event: dict = {}
+        for n in news_rows.fetchall():
+            news_by_event.setdefault(n.event_id, []).append({
+                "source_name": n.source_name,
+                "url":         n.source_url,
+                "title":       n.title,
+                "published_at": str(n.published_at) if n.published_at else None,
+                "credibility":  round(float(n.credibility_score), 2) if n.credibility_score else None,
+            })
+
+        # 組裝回傳
+        events_out = []
+        for r in events_raw:
+            events_out.append({
+                "event_id":         r.event_id,
+                "title":            r.title,
+                "event_type":       r.event_type,
+                "risk_or_relief":   r.risk_or_relief,
+                "severity":         round(float(r.severity), 3) if r.severity else None,
+                "event_time":       str(r.event_time),
+                "region_code":      r.region_code,
+                "source_count":     r.source_count,
+                "source_confidence":round(float(r.source_confidence), 2) if r.source_confidence else None,
+                "final_score":      round(float(r.final_score), 2) if r.final_score else None,
+                "score_breakdown": {
+                    "base_severity":    round(float(r.base_severity), 3) if r.base_severity else None,
+                    "scope_weight":     round(float(r.scope_weight), 3) if r.scope_weight else None,
+                    "geo_sensitivity":  round(float(r.geo_sensitivity), 3) if r.geo_sensitivity else None,
+                    "actor_importance": round(float(r.actor_importance), 3) if r.actor_importance else None,
+                    "time_decay":       round(float(r.time_decay), 3) if r.time_decay else None,
+                    "raw_score":        round(float(r.raw_score), 4) if r.raw_score else None,
+                } if r.final_score else None,
+                "dimensions": {
+                    "military":  round(float(r.military_score), 2) if r.military_score else None,
+                    "political": round(float(r.political_score), 2) if r.political_score else None,
+                    "economic":  round(float(r.economic_score), 2) if r.economic_score else None,
+                    "social":    round(float(r.social_score), 2) if r.social_score else None,
+                    "cyber":     round(float(r.cyber_score), 2) if r.cyber_score else None,
+                } if r.military_score else None,
+                "countries":   list(r.country_codes) if r.country_codes else [],
+                "news_sources": news_by_event.get(r.id, []),
+            })
+
+        return {"total": len(events_out), "events": events_out}
+
+    async def get_event_detail(self, event_id: str) -> dict | None:
+        """單一事件完整詳情"""
+        row = await self.session.execute(text("""
+            SELECT
+                e.id, e.event_id, e.title, e.content,
+                e.event_type, e.risk_or_relief, e.severity,
+                e.event_time, e.region_code,
+                e.source_count, e.source_confidence,
+                es.final_score, es.raw_score,
+                es.base_severity, es.scope_weight,
+                es.geo_sensitivity, es.actor_importance,
+                es.source_confidence AS es_confidence, es.time_decay,
+                ed.military_score, ed.political_score,
+                ed.economic_score, ed.social_score, ed.cyber_score,
+                ea.summary_zh, ea.summary_en, ea.impact_direction,
+                ea.confidence AS ai_confidence, ea.explanation
+            FROM events e
+            LEFT JOIN event_scores es ON e.id = es.event_id AND es.scoring_version = :sv
+            LEFT JOIN event_dimensions ed ON e.id = ed.event_id
+            LEFT JOIN event_ai_analysis ea ON e.id = ea.event_id
+            WHERE e.event_id = :event_id
+        """), {"event_id": event_id, "sv": self.sv})
+        r = row.fetchone()
+        if not r:
+            return None
+
+        # Countries
+        c_rows = await self.session.execute(text("""
+            SELECT country_code, role FROM event_countries WHERE event_id = :id
+        """), {"id": r.id})
+        countries = [{"country_code": c.country_code, "role": c.role} for c in c_rows.fetchall()]
+
+        # News
+        n_rows = await self.session.execute(text("""
+            SELECT source_name, source_url, title, published_at, credibility_score
+            FROM news_sources WHERE event_id = :id
+            ORDER BY credibility_score DESC NULLS LAST
+        """), {"id": r.id})
+        news = [{
+            "source_name": n.source_name,
+            "url":         n.source_url,
+            "title":       n.title,
+            "published_at": str(n.published_at) if n.published_at else None,
+            "credibility":  round(float(n.credibility_score), 2) if n.credibility_score else None,
+        } for n in n_rows.fetchall()]
+
+        return {
+            "event_id":    r.event_id,
+            "title":       r.title,
+            "content":     r.content,
+            "event_type":  r.event_type,
+            "risk_or_relief": r.risk_or_relief,
+            "severity":    round(float(r.severity), 3) if r.severity else None,
+            "event_time":  str(r.event_time),
+            "region_code": r.region_code,
+            "source_count": r.source_count,
+            "source_confidence": round(float(r.source_confidence), 2) if r.source_confidence else None,
+            "final_score": round(float(r.final_score), 2) if r.final_score else None,
+            "score_breakdown": {
+                "base_severity":    round(float(r.base_severity), 3) if r.base_severity else None,
+                "scope_weight":     round(float(r.scope_weight), 3) if r.scope_weight else None,
+                "geo_sensitivity":  round(float(r.geo_sensitivity), 3) if r.geo_sensitivity else None,
+                "actor_importance": round(float(r.actor_importance), 3) if r.actor_importance else None,
+                "time_decay":       round(float(r.time_decay), 3) if r.time_decay else None,
+                "raw_score":        round(float(r.raw_score), 4) if r.raw_score else None,
+            } if r.final_score else None,
+            "dimensions": {
+                "military":  round(float(r.military_score), 2) if r.military_score else None,
+                "political": round(float(r.political_score), 2) if r.political_score else None,
+                "economic":  round(float(r.economic_score), 2) if r.economic_score else None,
+                "social":    round(float(r.social_score), 2) if r.social_score else None,
+                "cyber":     round(float(r.cyber_score), 2) if r.cyber_score else None,
+            } if r.military_score else None,
+            "ai_analysis": {
+                "summary_zh":       r.summary_zh,
+                "summary_en":       r.summary_en,
+                "impact_direction": r.impact_direction,
+                "confidence":       round(float(r.ai_confidence), 2) if r.ai_confidence else None,
+                "explanation":      r.explanation,
+            } if r.summary_zh else None,
+            "countries":    countries,
+            "news_sources": news,
+        }
+
     # ── 內部輔助 ─────────────────────────────────────────────────────────────
 
     async def _fetch_global(self, date_str: str) -> dict | None:
