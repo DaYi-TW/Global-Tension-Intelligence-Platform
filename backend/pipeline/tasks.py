@@ -165,10 +165,30 @@ def ai_enrich_pending(self):
 def score_and_aggregate(self):
     """重算並聚合各層分數，完成後觸發 refresh_cache"""
     logger.info("Starting score_and_aggregate")
-    # TODO: 實作 ScoringEngine
-    raise NotImplementedError("Scoring engine not yet implemented")
-    # 完成後觸發快取更新：
-    # refresh_cache.delay()
+
+    async def _run():
+        from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+        from app.core.config import get_settings
+        from pipeline.scoring.engine import ScoringEngine
+
+        settings = get_settings()
+        engine = create_async_engine(settings.database_url)
+        SessionLocal = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+        try:
+            async with SessionLocal() as session:
+                scoring = ScoringEngine(session, scoring_version=settings.scoring_version)
+                result = await scoring.run()
+        finally:
+            await engine.dispose()
+
+        logger.info(f"score_and_aggregate done: {result}")
+        return result
+
+    result = _run_async(_run())
+    # 完成後觸發快取更新
+    refresh_cache.delay()
+    return result
 
 
 @celery_app.task(
