@@ -1,12 +1,28 @@
 """
-Celery Tasks — 所有 Pipeline 任務定義（骨架版，功能逐步實作）
+Celery Tasks — 所有 Pipeline 任務定義
 對應 docs/09-scheduler-worker.md
 """
 
+import asyncio
 import logging
+
 from pipeline.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
+
+
+def _run_async(coro):
+    """
+    在同步 Celery task 中執行 async 函式。
+    每次建立全新 event loop，確保 asyncpg 連線不跨 loop。
+    """
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
+        asyncio.set_event_loop(None)
 
 
 # ─── 資料抓取 ──────────────────────────────────────────────────────────────
@@ -20,13 +36,36 @@ logger = logging.getLogger(__name__)
     retry_backoff=True,
     retry_backoff_max=600,
     retry_jitter=True,
-    time_limit=120,
+    time_limit=180,
 )
 def ingest_gdelt(self):
     """抓取 GDELT 最新資料，寫入 raw_events"""
     logger.info("Starting GDELT ingestion")
-    # TODO: 實作 GDELTAdapter
-    raise NotImplementedError("GDELT adapter not yet implemented")
+
+    async def _run():
+        # 每次都建立新 engine，確保不跨 event loop
+        from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+        from app.core.config import get_settings
+        from pipeline.ingestion.gdelt_adapter import GDELTAdapter
+        from pipeline.ingestion.repository import save_raw_events
+
+        settings = get_settings()
+        engine = create_async_engine(settings.database_url)
+        SessionLocal = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+        try:
+            adapter = GDELTAdapter()
+            raw_events = await adapter.fetch()
+
+            async with SessionLocal() as session:
+                inserted, skipped = await save_raw_events(session, raw_events)
+        finally:
+            await engine.dispose()
+
+        logger.info(f"GDELT ingest done: inserted={inserted}, skipped={skipped}")
+        return {"inserted": inserted, "skipped": skipped}
+
+    return _run_async(_run())
 
 
 @celery_app.task(
@@ -77,8 +116,27 @@ def ingest_news(self):
 def normalize_pending(self):
     """正規化待處理事件（每次最多 500 筆）"""
     logger.info("Starting normalization of pending raw_events")
-    # TODO: 實作 NormalizationService
-    raise NotImplementedError("Normalization service not yet implemented")
+
+    async def _run():
+        from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+        from app.core.config import get_settings
+        from pipeline.normalization.service import NormalizationService
+
+        settings = get_settings()
+        engine = create_async_engine(settings.database_url)
+        SessionLocal = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+        try:
+            async with SessionLocal() as session:
+                service = NormalizationService(session)
+                result = await service.run()
+        finally:
+            await engine.dispose()
+
+        logger.info(f"Normalization done: {result}")
+        return result
+
+    return _run_async(_run())
 
 
 @celery_app.task(
