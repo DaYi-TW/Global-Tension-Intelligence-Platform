@@ -11,12 +11,12 @@ function scoreToFillColor(score) {
 
 // Build a MapLibre 'match' fill-color expression from mapData
 function buildColorExpression(mapData) {
+  const entries = Object.entries(mapData).filter(([, d]) => d && d.score != null)
+  // MapLibre 'match' 需要至少一對 input/output，否則直接回傳 fallback 顏色
+  if (entries.length === 0) return NO_DATA_COLOR
   const expr = ['match', ['get', ISO_PROP]]
-  const entries = Object.entries(mapData)
   for (const [iso3, d] of entries) {
-    if (d && d.score != null) {
-      expr.push(iso3, scoreToFillColor(d.score))
-    }
+    expr.push(iso3, scoreToFillColor(d.score))
   }
   expr.push(NO_DATA_COLOR) // fallback
   return expr

@@ -3,6 +3,7 @@ Tension API Routes
 GET /api/tension/global/trend
 GET /api/tension/regions
 GET /api/tension/countries
+GET /api/tension/countries/{country_code}/trend
 """
 
 from fastapi import APIRouter, Depends, Query
@@ -42,7 +43,6 @@ async def get_regions(
 ):
     """區域緊張度排行"""
     from datetime import datetime, timezone
-    from app.core.config import get_settings
     sv = settings.scoring_version
     target_date_str = date or str(datetime.now(timezone.utc).date())
     cache_key = f"tension:regions:{target_date_str}:{sv}"
@@ -54,6 +54,25 @@ async def get_regions(
             from datetime import date as date_type
             target = date_type.fromisoformat(date)
         return await svc.get_regions(target)
+
+    return await cache_get_or_compute(cache_key, compute, TTL_TENSION)
+
+
+@router.get("/tension/countries/{country_code}/trend")
+async def get_country_trend(
+    country_code: str,
+    range: str = Query("30d", pattern="^(7d|30d|90d|1y)$"),
+    db: AsyncSession = Depends(get_db),
+):
+    """單一國家歷史張力趨勢"""
+    from datetime import datetime, timezone
+    sv = settings.scoring_version
+    code = country_code.upper()
+    cache_key = f"tension:country:{code}:trend:{range}:{sv}"
+
+    async def compute():
+        svc = QueryService(db, scoring_version=sv)
+        return await svc.get_country_trend(code, range)
 
     return await cache_get_or_compute(cache_key, compute, TTL_TENSION)
 

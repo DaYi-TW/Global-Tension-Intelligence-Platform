@@ -106,18 +106,31 @@ def gdelt_themes_to_event_type(themes: list[str]) -> str:
     """
     將 GDELT themes 列表映射到平台 event_type
     優先匹配優先級最高（最嚴重）的主題
+    使用完整詞段比對（以 _ 或字串邊界分隔），避免子字串誤觸
     """
     themes_upper = [t.upper() for t in themes]
+
+    def matches(keyword: str, theme: str) -> bool:
+        """完整詞段比對：keyword 必須是 theme 中以 _ 分隔的完整詞"""
+        parts = theme.split("_")
+        # 允許 keyword 本身含 _ 做多詞比對
+        kw_parts = keyword.split("_")
+        # 滑動視窗比對
+        for i in range(len(parts) - len(kw_parts) + 1):
+            if parts[i:i + len(kw_parts)] == kw_parts:
+                return True
+        return False
+
     for keyword, event_type in GDELT_THEME_TO_EVENT_TYPE:
         for theme in themes_upper:
-            if keyword in theme:
+            if matches(keyword, theme):
                 return event_type
-    return "military_clash"  # 無法匹配時給予預設值
+    return "protest_large"  # 無法匹配時給予低嚴重度預設值（severity=0.40）
 
 
 def get_event_type_rule(event_type: str) -> EventTypeRule:
-    """取得事件類型規則，未知類型 fallback 到 military_clash"""
-    return EVENT_TYPE_RULES.get(event_type, EVENT_TYPE_RULES["military_clash"])
+    """取得事件類型規則，未知類型 fallback 到 protest_large（低嚴重度）"""
+    return EVENT_TYPE_RULES.get(event_type, EVENT_TYPE_RULES["protest_large"])
 
 
 def infer_dimensions(primary_dimension: str, severity: float) -> dict[str, float]:

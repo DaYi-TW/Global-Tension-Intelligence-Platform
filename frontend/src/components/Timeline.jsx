@@ -49,13 +49,12 @@ export default function Timeline() {
   const total = totalDays(dateRange.from, dateRange.to)
   const currentIdx = dateToIndex(currentDate, dateRange.from)
 
-  // Load single day data
+  // Load single day data — only fetch from API if not already preloaded
   const loadDate = useCallback(async (date) => {
-    const cached = useStore.getState().preloadedData[date]
-    if (cached) {
-      setMapData(date, cached)
-      return
-    }
+    const state = useStore.getState()
+    // If already preloaded, setDate already applied it — nothing to do
+    if (state.preloadedData[date]) return
+
     setMapLoading(true)
     try {
       const result = await fetchMapHeat(date, mapDimension)

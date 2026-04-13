@@ -583,6 +583,47 @@ class QueryService:
             "news_sources": news,
         }
 
+    async def get_country_trend(
+        self,
+        country_code: str,
+        range_str: str = "30d",
+    ) -> dict:
+        """指定國家的歷史張力趨勢"""
+        days = RANGE_DAYS.get(range_str, 30)
+        from datetime import datetime, timezone
+        today = datetime.now(timezone.utc).date()
+        from_date = today - timedelta(days=days - 1)
+
+        rows = await self.session.execute(text("""
+            SELECT date, net_tension,
+                   military_score, political_score, economic_score,
+                   social_score, cyber_score, event_count
+            FROM country_tension_daily
+            WHERE country_code = :code
+              AND date >= :from_date
+              AND scoring_version = :sv
+            ORDER BY date ASC
+        """), {"code": country_code, "from_date": from_date, "sv": self.sv})
+
+        data = []
+        for r in rows.fetchall():
+            data.append({
+                "date":        str(r.date),
+                "net_tension": round(float(r.net_tension), 2),
+                "military":    round(float(r.military_score), 2),
+                "political":   round(float(r.political_score), 2),
+                "economic":    round(float(r.economic_score), 2),
+                "social":      round(float(r.social_score), 2),
+                "cyber":       round(float(r.cyber_score), 2),
+                "event_count": r.event_count,
+            })
+
+        return {
+            "country_code": country_code,
+            "range":        range_str,
+            "data":         data,
+        }
+
     # ── 內部輔助 ─────────────────────────────────────────────────────────────
 
     async def _fetch_global(self, date_str: str) -> dict | None:

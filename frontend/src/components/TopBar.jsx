@@ -24,15 +24,20 @@ function AnimatedNumber({ value }) {
 }
 
 export default function TopBar({ globalData }) {
-  const mapDimension = useStore(s => s.mapDimension)
-  const setDimension = useStore(s => s.setDimension)
-  const currentDate  = useStore(s => s.currentDate)
-  const location     = useLocation()
+  const mapDimension    = useStore(s => s.mapDimension)
+  const setDimension    = useStore(s => s.setDimension)
+  const currentDate     = useStore(s => s.currentDate)
+  const liveScore       = useStore(s => s.liveGlobalScore)
+  const liveBand        = useStore(s => s.liveGlobalBand)
+  const liveBandZh      = useStore(s => s.liveGlobalBandZh)
+  const location        = useLocation()
 
-  const score = globalData?.global_tension
-  const delta = globalData?.global_delta
-  const band  = globalData?.global_band || 'Watch'
-  const bandZh = globalData?.global_band_zh || '—'
+  // 優先用 store 裡從 mapData 即時算出的分數，沒有才 fallback 到初始 API 資料
+  const score    = liveScore   ?? globalData?.global_tension
+  const band     = liveBand    ?? globalData?.global_band    ?? 'Watch'
+  const bandZh   = liveBandZh  ?? globalData?.global_band_zh ?? '—'
+  // delta 只在 API 資料才有（即時計算沒有前一天比較）
+  const delta    = liveScore != null ? null : globalData?.global_delta
   const bandColor = BAND_COLORS[band] || '#8a8fa8'
 
   return (
@@ -67,6 +72,7 @@ export default function TopBar({ globalData }) {
               color: bandColor,
               lineHeight: 1,
               textShadow: `0 0 20px ${bandColor}44`,
+              transition: 'color 0.4s ease',
             }}
           >
             <AnimatedNumber value={score} />
@@ -89,6 +95,7 @@ export default function TopBar({ globalData }) {
               border: `1px solid ${bandColor}44`,
               fontFamily: "'Exo 2', sans-serif",
               letterSpacing: '0.05em',
+              transition: 'all 0.4s ease',
             }}
           >
             {band.toUpperCase()}

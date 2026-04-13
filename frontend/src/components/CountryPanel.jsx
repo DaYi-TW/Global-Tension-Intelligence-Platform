@@ -3,7 +3,8 @@ import { motion, AnimatePresence } from 'framer-motion'
 import ReactECharts from 'echarts-for-react'
 import useStore from '../store/useStore'
 import { BAND_COLORS, getCountryName } from '../constants'
-import { fetchCountries, fetchGlobalTrend, fetchEvents } from '../api/index'
+import { fetchCountries, fetchCountryTrend, fetchEvents } from '../api/index'
+import { humanizeTitle } from '../utils/gdeltParser'
 
 const DIM_LABELS = {
   military:  '軍事',
@@ -141,8 +142,7 @@ function EventCard({ event, isExpanded, onToggle }) {
             className="text-xs leading-snug"
             style={{ color: '#c8cad4', wordBreak: 'break-word' }}
           >
-            {/* Clean up [GDELT] prefix */}
-            {event.title?.replace(/^\[GDELT\]\s*/, '') || '—'}
+            {humanizeTitle(event.title, event.event_type)}
           </div>
 
           {/* Countries involved */}
@@ -296,7 +296,7 @@ export default function CountryPanel() {
 
     Promise.all([
       fetchCountries(currentDate, null, 200),
-      fetchGlobalTrend('30d'),
+      fetchCountryTrend(sidePanelCountry, '30d'),
       fetchEvents({ country: sidePanelCountry, limit: 20, date: currentDate }),
     ])
       .then(([res, trendRes, eventsRes]) => {
@@ -404,7 +404,7 @@ export default function CountryPanel() {
 
           {/* ── Trend ──────────────────────────────────────────── */}
           <div className="px-4 pt-3 pb-1 flex-shrink-0" style={{ borderBottom: '1px solid #2a2d3a' }}>
-            <div className="text-xs mb-1" style={{ color: '#8a8fa8' }}>📈 近 30 天全球趨勢（參考）</div>
+            <div className="text-xs mb-1" style={{ color: '#8a8fa8' }}>📈 近 30 天張力趨勢</div>
             {trendOption
               ? <ReactECharts option={trendOption} style={{ height: '80px' }} />
               : <div style={{ height: '80px', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#8a8fa8', fontSize: '12px' }}>

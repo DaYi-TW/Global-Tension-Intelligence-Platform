@@ -195,10 +195,12 @@ class ScoringEngine:
 
         # 按國家聚合
         country_data: dict[str, dict] = defaultdict(lambda: {
-            "risk_total":   0.0,
-            "relief_total": 0.0,
-            "dim_scores":   defaultdict(float),
-            "event_count":  0,
+            "risk_total":    0.0,
+            "relief_total":  0.0,
+            "risk_count":    0,
+            "relief_count":  0,
+            "dim_scores":    defaultdict(float),
+            "event_count":   0,
         })
 
         for row in rows.fetchall():
@@ -212,26 +214,36 @@ class ScoringEngine:
 
             if row.risk_or_relief == "risk":
                 d["risk_total"] += weighted
+                d["risk_count"] += 1
                 # 累積維度分數
                 for dim in ["military", "political", "economic", "social", "cyber"]:
                     dim_val = getattr(row, f"{dim}_score", 0) or 0
                     d["dim_scores"][dim] += weighted * float(dim_val)
             else:
                 d["relief_total"] += weighted
+                d["relief_count"] += 1
 
         if not country_data:
             return 0
 
         # 寫入 country_tension_daily
         for country_code, d in country_data.items():
-            risk_total   = d["risk_total"]
-            relief_total = d["relief_total"]
-            net_raw      = risk_total - 0.7 * relief_total
-            net_tension  = normalize_to_100(max(0.0, net_raw))
+            risk_count   = d["risk_count"]
+            relief_count = d["relief_count"]
 
+            # 改用加權平均：平均每筆事件的嚴重度，消除事件數量膨脹效應
+            risk_avg   = d["risk_total"]   / risk_count   if risk_count   > 0 else 0.0
+            relief_avg = d["relief_total"] / relief_count if relief_count > 0 else 0.0
+            net_raw    = risk_avg - 0.7 * relief_avg
+            net_tension = normalize_to_100(max(0.0, net_raw), scale=5.0)
+
+            # 維度分數同樣取平均
             dim_scores = d["dim_scores"]
             dims = {
-                dim: normalize_to_100(dim_scores.get(dim, 0.0))
+                dim: normalize_to_100(
+                    dim_scores.get(dim, 0.0) / risk_count if risk_count > 0 else 0.0,
+                    scale=5.0
+                )
                 for dim in ["military", "political", "economic", "social", "cyber"]
             }
 
@@ -263,8 +275,8 @@ class ScoringEngine:
             """), {
                 "country_code":    country_code,
                 "date":            self.target_date,
-                "risk_score":      round(risk_total, 2),
-                "relief_score":    round(relief_total, 2),
+                "risk_score":      round(d["risk_total"], 2),
+                "relief_score":    round(d["relief_total"], 2),
                 "net_tension":     net_tension,
                 "military":        dims["military"],
                 "political":       dims["political"],
@@ -390,6 +402,7 @@ class ScoringEngine:
             + WORLD_TENSION_WEIGHTS["cyber"]     * cyber_avg,
             2
         )
+        # 全球分數已經是 0-100 的平均，直接 clamp 即可
         net_tension = max(0.0, min(100.0, net_tension))
 
         # 取 top risk/relief 事件 ID

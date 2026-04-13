@@ -33,6 +33,9 @@ export const fetchMapHeatRange = (from, to, dimension = 'overall') =>
     params: { from, to, dimension },
   }).then(r => r.data)
 
+export const fetchCountryTrend = (countryCode, range = '30d') =>
+  api.get(`/tension/countries/${countryCode}/trend`, { params: { range } }).then(r => r.data)
+
 export const fetchEvents = (params = {}) =>
   api.get('/events', { params }).then(r => r.data)
 
